@@ -82,5 +82,5 @@ fn main() {
         })
         .sum::<usize>();
 
-    println!("{}", word_count);
+    println!("总字数：{}", word_count);
 }
