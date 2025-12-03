@@ -31,9 +31,10 @@ jobs:
 
       - name: Extract package name from Cargo.toml
         id: pkg
+        shell: bash
         run: |
           NAME=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].name')
-          if [[ -z "$NAME" ]] || [[ "$NAME" == "null" ]]; then
+          if [ -z "$NAME" ] || [ "$NAME" = "null" ]; then
             echo "❌ Failed to extract package name from Cargo.toml"
             exit 1
           fi
@@ -41,6 +42,7 @@ jobs:
 
       - name: Set archive name dynamically
         id: archive
+        shell: bash
         run: |
           PKG="${{ steps.pkg.outputs.package_name }}"
           VER="${GITHUB_REF_NAME}"
@@ -64,7 +66,7 @@ jobs:
           BIN_NAME="${{ steps.pkg.outputs.package_name }}"
           TARGET_DIR="target/${{ matrix.target }}/release"
 
-          if [[ "${{ matrix.os }}" == "windows-latest" ]]; then
+          if [ "${{ matrix.os }}" = "windows-latest" ]; then
             BIN="${TARGET_DIR}/${BIN_NAME}.exe"
             OUTPUT="${BIN_NAME}.exe"
           else
@@ -72,7 +74,7 @@ jobs:
             OUTPUT="${BIN_NAME}"
           fi
 
-          if [[ ! -f "$BIN" ]]; then
+          if [ ! -f "$BIN" ]; then
             echo "❌ Binary not found: $BIN"
             ls -l "${TARGET_DIR}/"
             exit 1
@@ -85,7 +87,7 @@ jobs:
         run: |
           ARCHIVE_NAME="${{ steps.archive.outputs.archive_name }}"
           OUTPUT_FILE="${{ steps.archive.outputs.output_file }}"
-          if [[ "${{ matrix.archive_ext }}" == "zip" ]]; then
+          if [ "${{ matrix.archive_ext }}" = "zip" ]; then
             7z a "$OUTPUT_FILE" "${OUTPUT}"
           else
             tar -czf "$OUTPUT_FILE" "${OUTPUT}"
@@ -114,19 +116,20 @@ jobs:
 
       - name: Generate changelog
         id: changelog
+        shell: bash
         run: |
           PREV_TAG=$(git describe --tags --abbrev=0 --exclude="${GITHUB_REF_NAME}" HEAD~1 2>/dev/null || echo "")
-          if [[ -n "$PREV_TAG" ]]; then
+          if [ -n "$PREV_TAG" ]; then
             LOG=$(git log --oneline "$PREV_TAG".."$GITHUB_REF_NAME")
           else
             LOG=$(git log --oneline --no-merges)
           fi
-          echo "changelog<<EOF" >> $GITHUB_OUTPUT
-          echo "## What's Changed" >> $GITHUB_OUTPUT
-          echo '```' >> $GITHUB_OUTPUT
-          echo "$LOG" >> $GITHUB_OUTPUT
-          echo '```' >> $GITHUB_OUTPUT
-          echo "EOF" >> $GITHUB_OUTPUT
+          echo "changelog<<EOF" >> "$GITHUB_OUTPUT"
+          echo "## What's Changed" >> "$GITHUB_OUTPUT"
+          echo '```' >> "$GITHUB_OUTPUT"
+          echo "$LOG" >> "$GITHUB_OUTPUT"
+          echo '```' >> "$GITHUB_OUTPUT"
+          echo "EOF" >> "$GITHUB_OUTPUT"
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
