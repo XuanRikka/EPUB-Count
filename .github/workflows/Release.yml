@@ -3,8 +3,8 @@ name: Release
 on:
   push:
     tags:
-      - 'v[0-9]+.[0-9]+.[0-9]+'          # 匹配 v1.2.3
-      - 'v[0-9]+.[0-9]+.[0-9]+-*'        # 匹配 v1.2.3-rc1, v1.2.3-beta 等
+      - 'v[0-9]+.[0-9]+.[0-9]+'
+      - 'v[0-9]+.[0-9]+.[0-9]+-*'
 
 jobs:
   release:
@@ -15,35 +15,42 @@ jobs:
         include:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
-            archive_name: ${{ env.PACKAGE_NAME }}-${{ github.ref_name }}-linux-x64
+            platform: linux-x64
             archive_ext: tar.gz
           - os: macos-latest
             target: x86_64-apple-darwin
-            archive_name: ${{ env.PACKAGE_NAME }}-${{ github.ref_name }}-macos-x64
+            platform: macos-x64
             archive_ext: zip
           - os: windows-latest
             target: x86_64-pc-windows-msvc
-            archive_name: ${{ env.PACKAGE_NAME }}-${{ github.ref_name }}-windows-x64
+            platform: windows-x64
             archive_ext: zip
-
-    env:
-      # 占位，将在 setup 步骤中被覆盖
-      PACKAGE_NAME: ""
 
     steps:
       - uses: actions/checkout@v4
 
       - name: Extract package name from Cargo.toml
-        id: package_name
+        id: pkg
         run: |
-          # 用 cargo metadata + jq 提取包名（首包即 workspace root 或单一 crate）
           NAME=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].name')
+          VERSION="${GITHUB_REF_NAME#v}"
           if [[ -z "$NAME" ]] || [[ "$NAME" == "null" ]]; then
-            echo "❌ Failed to extract package name from Cargo.toml"
+            echo "❌ Failed to extract package name"
             exit 1
           fi
           echo "package_name=$NAME" >> "$GITHUB_OUTPUT"
-          echo "PACKAGE_NAME=$NAME" >> "$GITHUB_ENV"
+          echo "version=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+
+      - name: Set archive name dynamically
+        id: archive
+        run: |
+          PKG="${{ steps.pkg.outputs.package_name }}"
+          VER="${{ steps.pkg.outputs.version }}"
+          PLATFORM="${{ matrix.platform }}"
+          EXT="${{ matrix.archive_ext }}"
+          NAME="${PKG}-${VER}-${PLATFORM}"
+          echo "archive_name=$NAME" >> "$GITHUB_OUTPUT"
+          echo "output_file=$NAME.$EXT" >> "$GITHUB_OUTPUT"
 
       - name: Install Rust toolchain for ${{ matrix.target }}
         uses: dtolnay/rust-toolchain@stable
@@ -56,7 +63,7 @@ jobs:
       - name: Prepare binary
         shell: bash
         run: |
-          BIN_NAME="${{ steps.package_name.outputs.package_name }}"
+          BIN_NAME="${{ steps.pkg.outputs.package_name }}"
           TARGET_DIR="target/${{ matrix.target }}/release"
 
           if [[ "${{ matrix.os }}" == "windows-latest" ]]; then
@@ -78,21 +85,23 @@ jobs:
       - name: Package
         shell: bash
         run: |
-          ARCHIVE_NAME="${{ matrix.archive_name }}"
+          ARCHIVE_NAME="${{ steps.archive.outputs.archive_name }}"
+          OUTPUT_FILE="${{ steps.archive.outputs.output_file }}"
           if [[ "${{ matrix.archive_ext }}" == "zip" ]]; then
-            7z a "${ARCHIVE_NAME}.zip" "${OUTPUT}"
+            7z a "$OUTPUT_FILE" "${OUTPUT}"
           else
-            tar -czf "${ARCHIVE_NAME}.tar.gz" "${OUTPUT}"
+            tar -czf "$OUTPUT_FILE" "${OUTPUT}"
           fi
+          echo "artifact_path=$OUTPUT_FILE" >> "$GITHUB_OUTPUT"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.archive_name }}
-          path: ${{ matrix.archive_name }}.${{ matrix.archive_ext }}
+          name: ${{ steps.archive.outputs.archive_name }}
+          path: ${{ steps.archive.outputs.output_file }}
 
   publish:
-    name: Publish Release
+    name: Publish Release & to crates.io
     needs: release
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/')
@@ -100,6 +109,17 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+
+      - name: Extract package info
+        id: pkg
+        run: |
+          METADATA=$(cargo metadata --no-deps --format-version 1)
+          NAME=$(echo "$METADATA" | jq -r '.packages[0].name')
+          VERSION=$(echo "$METADATA" | jq -r '.packages[0].version')
+          REF_VER="${GITHUB_REF_NAME#v}"
+          echo "package_name=$NAME" >> "$GITHUB_OUTPUT"
+          echo "crate_version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag_version=$REF_VER" >> "$GITHUB_OUTPUT"
 
       - name: Download all artifacts
         uses: actions/download-artifact@v4
@@ -110,17 +130,28 @@ jobs:
         id: changelog
         run: |
           PREV_TAG=$(git describe --tags --abbrev=0 --exclude="${GITHUB_REF_NAME}" HEAD~1 2>/dev/null || echo "")
-          if [[ -n "$PREV_TAG" ]]; then
-            LOG=$(git log --oneline "$PREV_TAG".."$GITHUB_REF_NAME")
-          else
-            LOG=$(git log --oneline --no-merges)
-          fi
-          echo "changelog<<EOF" >> $GITHUB_OUTPUT
-          echo "## What's Changed" >> $GITHUB_OUTPUT
-          echo '```' >> $GITHUB_OUTPUT
-          echo "$LOG" >> $GITHUB_OUTPUT
-          echo '```' >> $GITHUB_OUTPUT
-          echo "EOF" >> $GITHUB_OUTPUT
+          LOG=$(git log --oneline "${PREV_TAG}..${GITHUB_REF_NAME}" 2>/dev/null || git log --oneline --no-merges)
+          {
+            echo "changelog<<EOF"
+            echo "## What's Changed"
+            echo '```'
+            echo "$LOG"
+            echo '```'
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Publish to crates.io (stable tags only)
+        if: "!contains(github.ref_name, '-')"
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: |
+          echo "📦 Publishing ${{ steps.pkg.outputs.package_name }} v${{ steps.pkg.outputs.crate_version }}..."
+          cargo publish --token "$CARGO_REGISTRY_TOKEN"
+          echo "✅ Published to crates.io."
+
+      - name: Skip publish for pre-release
+        if: "contains(github.ref_name, '-')"
+        run: echo "🔖 Pre-release tag; skipping cargo publish."
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
