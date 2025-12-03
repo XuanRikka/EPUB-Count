@@ -31,34 +31,37 @@ jobs:
 
       - name: Extract package name from Cargo.toml
         id: pkg
+        shell: bash
         run: |
-          cat > get-pkg.sh << 'EOF'
-          #!/bin/bash
-          set -euo pipefail
           NAME=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].name')
-          if [ -z "$NAME" ] || [ "$NAME" = "null" ]; then
+          if [[ -z "$NAME" || "$NAME" == "null" ]]; then
             echo "❌ Failed to extract package name from Cargo.toml" >&2
+            echo "Debug: cargo metadata output:" >&2
+            cargo metadata --no-deps --format-version 1 | jq . >&2
             exit 1
           fi
           echo "package_name=$NAME" >> "$GITHUB_OUTPUT"
-          EOF
-          bash get-pkg.sh
+          echo "✅ Package name: $NAME"
 
       - name: Set archive name dynamically
         id: archive
+        shell: bash
         run: |
-          cat > set-archive.sh << 'EOF'
-          #!/bin/bash
-          set -euo pipefail
-          PKG="${{ steps.pkg.outputs.package_name }}"
-          VER="${GITHUB_REF_NAME}"
-          PLATFORM="${{ matrix.platform }}"
-          EXT="${{ matrix.archive_ext }}"
+          PKG=${{ steps.pkg.outputs.package_name }}
+          # Strip 'v' prefix from tag, e.g., v1.2.3 → 1.2.3
+          VER=${GITHUB_REF_NAME#v}
+          PLATFORM=${{ matrix.platform }}
+          EXT=${{ matrix.archive_ext }}
+          
+          if [[ -z "$PKG" ]]; then
+            echo "❌ package_name is empty (from Cargo.toml)" >&2
+            exit 1
+          fi
+
           NAME="${PKG}-${VER}-${PLATFORM}"
           echo "archive_name=$NAME" >> "$GITHUB_OUTPUT"
           echo "output_file=$NAME.$EXT" >> "$GITHUB_OUTPUT"
-          EOF
-          bash set-archive.sh
+          echo "📁 Archive: $NAME.$EXT"
 
       - name: Install Rust toolchain for ${{ matrix.target }}
         uses: dtolnay/rust-toolchain@stable
@@ -69,52 +72,48 @@ jobs:
         run: cargo build --release --target ${{ matrix.target }}
 
       - name: Prepare binary
+        shell: bash
         run: |
-          cat > prepare-bin.sh << 'EOF'
-          #!/bin/bash
-          set -euo pipefail
-          BIN_NAME="${{ steps.pkg.outputs.package_name }}"
+          BIN_NAME=${{ steps.pkg.outputs.package_name }}
           TARGET_DIR="target/${{ matrix.target }}/release"
 
-          if [ "${{ matrix.os }}" = "windows-latest" ]; then
-            BIN="$TARGET_DIR/$BIN_NAME.exe"
-            OUTPUT="$BIN_NAME.exe"
+          if [[ "${{ matrix.os }}" == "windows-latest" ]]; then
+            BIN="${TARGET_DIR}/${BIN_NAME}.exe"
+            OUTPUT="${BIN_NAME}.exe"
           else
-            BIN="$TARGET_DIR/$BIN_NAME"
-            OUTPUT="$BIN_NAME"
+            BIN="${TARGET_DIR}/${BIN_NAME}"
+            OUTPUT="${BIN_NAME}"
           fi
 
-          if [ ! -f "$BIN" ]; then
-            echo "❌ Binary not found: $BIN" >&2
-            ls -l "$TARGET_DIR/"
+          echo "🔍 Looking for binary: $BIN"
+          if [[ ! -f "$BIN" ]]; then
+            echo "❌ Binary not found!" >&2
+            echo "Contents of $TARGET_DIR:" >&2
+            ls -l "$TARGET_DIR/" >&2
             exit 1
           fi
 
           cp "$BIN" "./$OUTPUT"
-          EOF
-          bash prepare-bin.sh
+          chmod +x "./$OUTPUT"  # Ensure executable on Unix-like systems
+          echo "✅ Prepared: ./$OUTPUT"
 
       - name: Package
+        shell: bash
         run: |
-          cat > package.sh << 'EOF'
-          #!/bin/bash
-          set -euo pipefail
           ARCHIVE_NAME="${{ steps.archive.outputs.archive_name }}"
           OUTPUT_FILE="${{ steps.archive.outputs.output_file }}"
-          BIN_NAME="${{ steps.pkg.outputs.package_name }}"
-          if [ "${{ matrix.os }}" = "windows-latest" ]; then
-            BIN="$BIN_NAME.exe"
-          else
-            BIN="$BIN_NAME"
+          OUTPUT_BIN="${{ steps.pkg.outputs.package_name }}"
+          if [[ "${{ matrix.os }}" == "windows-latest" ]]; then
+            OUTPUT_BIN="${OUTPUT_BIN}.exe"
           fi
 
-          if [ "${{ matrix.archive_ext }}" = "zip" ]; then
-            7z a "$OUTPUT_FILE" "$BIN"
+          echo "📦 Packaging $OUTPUT_BIN → $OUTPUT_FILE"
+          if [[ "${{ matrix.archive_ext }}" == "zip" ]]; then
+            7z a "$OUTPUT_FILE" "$OUTPUT_BIN"
           else
-            tar -czf "$OUTPUT_FILE" "$BIN"
+            tar -czf "$OUTPUT_FILE" "$OUTPUT_BIN"
           fi
-          EOF
-          bash package.sh
+          ls -lh "$OUTPUT_FILE"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
@@ -127,6 +126,9 @@ jobs:
     needs: release
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/')
+    permissions:
+      contents: write  # Required for gh-release
+
     steps:
       - uses: actions/checkout@v4
         with:
@@ -137,35 +139,37 @@ jobs:
         with:
           path: artifacts
 
+      - name: Flatten artifacts (for gh-release)
+        run: |
+          mkdir -p release-assets
+          find artifacts -type f \( -name "*.zip" -o -name "*.tar.gz" \) -exec mv {} release-assets/ \;
+
       - name: Generate changelog
         id: changelog
+        shell: bash
         run: |
-          cat > gen-changelog.sh << 'EOF'
-          #!/bin/bash
-          set -euo pipefail
           PREV_TAG=$(git describe --tags --abbrev=0 --exclude="${GITHUB_REF_NAME}" HEAD~1 2>/dev/null || echo "")
-          if [ -n "$PREV_TAG" ]; then
-            LOG=$(git log --oneline "$PREV_TAG".."$GITHUB_REF_NAME")
+          if [[ -n "$PREV_TAG" ]]; then
+            LOG=$(git log --oneline "$PREV_TAG".."$GITHUB_REF_NAME" --no-merges)
+            echo "## Changes since $PREV_TAG" >> "$GITHUB_OUTPUT"
           else
-            LOG=$(git log --oneline --no-merges)
+            LOG=$(git log --oneline --no-merges HEAD~10..HEAD)
+            echo "## Recent changes" >> "$GITHUB_OUTPUT"
           fi
-          {
-            echo "changelog<<EOF"
-            echo "## What's Changed"
-            echo '```'
-            echo "$LOG"
-            echo '```'
-            echo "EOF"
-          } >> "$GITHUB_OUTPUT"
-          EOF
-          bash gen-changelog.sh
+          if [[ -z "$LOG" ]]; then
+            LOG="No commits found."
+          fi
+          echo "changelog<<EOF" >> "$GITHUB_OUTPUT"
+          echo "$LOG" >> "$GITHUB_OUTPUT"
+          echo "EOF" >> "$GITHUB_OUTPUT"
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          files: |
-            artifacts/*/*.zip
-            artifacts/*/*.tar.gz
-          body: ${{ steps.changelog.outputs.changelog }}
+          files: release-assets/*
+          body: |
+            ${{ steps.changelog.outputs.changelog }}
+
+            📦 Download your platform's archive above.
           draft: false
           prerelease: ${{ contains(github.ref_name, '-') }}
