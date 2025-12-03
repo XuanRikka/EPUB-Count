@@ -148,19 +148,34 @@ jobs:
         id: changelog
         shell: bash
         run: |
-          PREV_TAG=$(git describe --tags --abbrev=0 --exclude="${GITHUB_REF_NAME}" HEAD~1 2>/dev/null || echo "")
+          PREV_TAG=$(git describe --tags --abbrev=0 --exclude="${GITHUB_REF_NAME}" HEAD~1 2>/dev/null)
+
           if [[ -n "$PREV_TAG" ]]; then
             LOG=$(git log --oneline "$PREV_TAG".."$GITHUB_REF_NAME" --no-merges)
-            echo "## Changes since $PREV_TAG" >> "$GITHUB_OUTPUT"
+            HEADER="## Changes since $PREV_TAG"
           else
-            LOG=$(git log --oneline --no-merges HEAD~10..HEAD)
-            echo "## Recent changes" >> "$GITHUB_OUTPUT"
+            # Fallback: compare against first commit
+            FIRST_COMMIT=$(git rev-list --max-parents=0 HEAD)
+            LOG=$(git log --oneline "$FIRST_COMMIT".."$GITHUB_REF_NAME" --no-merges)
+            HEADER="## Changes (from first commit)"
           fi
+
           if [[ -z "$LOG" ]]; then
             LOG="No commits found."
           fi
+
+          # ✅ CORRECT: Only ONE output: `changelog<<EOF ... EOF`
           echo "changelog<<EOF" >> "$GITHUB_OUTPUT"
-          echo "$LOG" >> "$GITHUB_OUTPUT"
+          echo "$HEADER"
+          echo
+          echo "$LOG"
+          echo "EOF" >> "$GITHUB_OUTPUT"
+
+          # ✅ CORRECT: Only ONE output: `changelog<<EOF ... EOF`
+          echo "changelog<<EOF" >> "$GITHUB_OUTPUT"
+          echo "$HEADER"
+          echo
+          echo "$LOG"
           echo "EOF" >> "$GITHUB_OUTPUT"
 
       - name: Create GitHub Release
