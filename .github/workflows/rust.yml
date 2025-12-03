@@ -1,0 +1,112 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+'          # 匹配 v1.2.3
+      - 'v[0-9]+.[0-9]+.[0-9]+-*'        # 匹配 v1.2.3-rc1, v1.2.3-beta 等
+
+jobs:
+  release:
+    name: Release ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            archive_name: myapp-${{ github.ref_name }}-linux-x64
+            archive_ext: tar.gz
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            archive_name: myapp-${{ github.ref_name }}-macos-x64
+            archive_ext: zip
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            archive_name: myapp-${{ github.ref_name }}-windows-x64
+            archive_ext: zip
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain for ${{ matrix.target }}
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Build (release)
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Prepare binary
+        shell: bash
+        run: |
+          # 确定输出路径（Windows 用 .exe，其他不用）
+          BIN_NAME="myapp"  # ← 改成你的 crate 名（或从 Cargo.toml 读取）
+          if [[ "${{ matrix.os }}" == "windows-latest" ]]; then
+            BIN="${{ matrix.target }}/release/${BIN_NAME}.exe"
+            OUTPUT="${BIN_NAME}.exe"
+          else
+            BIN="${{ matrix.target }}/release/${BIN_NAME}"
+            OUTPUT="${BIN_NAME}"
+          fi
+
+          # 复制到工作区根目录，便于后续打包
+          cp "$BIN" "./$OUTPUT"
+
+      - name: Package
+        shell: bash
+        run: |
+          ARCHIVE_NAME="${{ matrix.archive_name }}"
+          if [[ "${{ matrix.archive_ext }}" == "zip" ]]; then
+            7z a "${ARCHIVE_NAME}.zip" "${OUTPUT}"
+          else
+            tar -czf "${ARCHIVE_NAME}.tar.gz" "${OUTPUT}"
+          fi
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.archive_name }}
+          path: ${{ matrix.archive_name }}.${{ matrix.archive_ext }}
+
+  publish:
+    name: Publish Release
+    needs: release
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # 获取完整历史，用于生成 changelog
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Generate changelog
+        id: changelog
+        run: |
+          # 简易 changelog：从上一个 tag 到当前 tag 的 commit 摘要
+          PREV_TAG=$(git describe --tags --abbrev=0 --exclude="${GITHUB_REF_NAME}" HEAD~1 2>/dev/null || echo "")
+          if [[ -n "$PREV_TAG" ]]; then
+            LOG=$(git log --oneline "$PREV_TAG".."$GITHUB_REF_NAME")
+          else
+            LOG=$(git log --oneline --no-merges)
+          fi
+          echo "changelog<<EOF" >> $GITHUB_OUTPUT
+          echo "## What's Changed" >> $GITHUB_OUTPUT
+          echo '```' >> $GITHUB_OUTPUT
+          echo "$LOG" >> $GITHUB_OUTPUT
+          echo '```' >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            artifacts/*/*.zip
+            artifacts/*/*.tar.gz
+          body: ${{ steps.changelog.outputs.changelog }}
+          draft: false
+          prerelease: ${{ contains(github.ref_name, '-') }}  # 带 -rc/-beta 的视为预发布
