@@ -15,19 +15,35 @@ jobs:
         include:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
-            archive_name: myapp-${{ github.ref_name }}-linux-x64
+            archive_name: ${{ env.PACKAGE_NAME }}-${{ github.ref_name }}-linux-x64
             archive_ext: tar.gz
           - os: macos-latest
             target: x86_64-apple-darwin
-            archive_name: myapp-${{ github.ref_name }}-macos-x64
+            archive_name: ${{ env.PACKAGE_NAME }}-${{ github.ref_name }}-macos-x64
             archive_ext: zip
           - os: windows-latest
             target: x86_64-pc-windows-msvc
-            archive_name: myapp-${{ github.ref_name }}-windows-x64
+            archive_name: ${{ env.PACKAGE_NAME }}-${{ github.ref_name }}-windows-x64
             archive_ext: zip
+
+    env:
+      # 占位，将在 setup 步骤中被覆盖
+      PACKAGE_NAME: ""
 
     steps:
       - uses: actions/checkout@v4
+
+      - name: Extract package name from Cargo.toml
+        id: package_name
+        run: |
+          # 用 cargo metadata + jq 提取包名（首包即 workspace root 或单一 crate）
+          NAME=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].name')
+          if [[ -z "$NAME" ]] || [[ "$NAME" == "null" ]]; then
+            echo "❌ Failed to extract package name from Cargo.toml"
+            exit 1
+          fi
+          echo "package_name=$NAME" >> "$GITHUB_OUTPUT"
+          echo "PACKAGE_NAME=$NAME" >> "$GITHUB_ENV"
 
       - name: Install Rust toolchain for ${{ matrix.target }}
         uses: dtolnay/rust-toolchain@stable
@@ -40,17 +56,23 @@ jobs:
       - name: Prepare binary
         shell: bash
         run: |
-          # 确定输出路径（Windows 用 .exe，其他不用）
-          BIN_NAME="myapp"  # ← 改成你的 crate 名（或从 Cargo.toml 读取）
+          BIN_NAME="${{ steps.package_name.outputs.package_name }}"
+          TARGET_DIR="target/${{ matrix.target }}/release"
+
           if [[ "${{ matrix.os }}" == "windows-latest" ]]; then
-            BIN="${{ matrix.target }}/release/${BIN_NAME}.exe"
+            BIN="${TARGET_DIR}/${BIN_NAME}.exe"
             OUTPUT="${BIN_NAME}.exe"
           else
-            BIN="${{ matrix.target }}/release/${BIN_NAME}"
+            BIN="${TARGET_DIR}/${BIN_NAME}"
             OUTPUT="${BIN_NAME}"
           fi
 
-          # 复制到工作区根目录，便于后续打包
+          if [[ ! -f "$BIN" ]]; then
+            echo "❌ Binary not found: $BIN"
+            ls -l "${TARGET_DIR}/"
+            exit 1
+          fi
+
           cp "$BIN" "./$OUTPUT"
 
       - name: Package
@@ -77,7 +99,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 0  # 获取完整历史，用于生成 changelog
+          fetch-depth: 0
 
       - name: Download all artifacts
         uses: actions/download-artifact@v4
@@ -87,7 +109,6 @@ jobs:
       - name: Generate changelog
         id: changelog
         run: |
-          # 简易 changelog：从上一个 tag 到当前 tag 的 commit 摘要
           PREV_TAG=$(git describe --tags --abbrev=0 --exclude="${GITHUB_REF_NAME}" HEAD~1 2>/dev/null || echo "")
           if [[ -n "$PREV_TAG" ]]; then
             LOG=$(git log --oneline "$PREV_TAG".."$GITHUB_REF_NAME")
@@ -109,4 +130,4 @@ jobs:
             artifacts/*/*.tar.gz
           body: ${{ steps.changelog.outputs.changelog }}
           draft: false
-          prerelease: ${{ contains(github.ref_name, '-') }}  # 带 -rc/-beta 的视为预发布
+          prerelease: ${{ contains(github.ref_name, '-') }}
