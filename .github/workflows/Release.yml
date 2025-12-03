@@ -146,25 +146,19 @@ jobs:
 
       - name: Generate changelog
         id: changelog
-        shell: bash
         run: |
-          PREV_TAG=$(git describe --tags --abbrev=0 --exclude="${GITHUB_REF_NAME}" HEAD~1 2>/dev/null)
+          set -euo pipefail
+          PREV_TAG=$(git describe --tags --abbrev=0 --exclude="$GITHUB_REF_NAME" HEAD~1 2>/dev/null || true)
 
-          if [[ -n "$PREV_TAG" ]]; then
-            LOG=$(git log --oneline "$PREV_TAG".."$GITHUB_REF_NAME" --no-merges)
+          if [ -n "$PREV_TAG" ]; then
             HEADER="## Changes since $PREV_TAG"
+            LOG=$(git log --oneline "$PREV_TAG..$GITHUB_REF_NAME" --no-merges 2>/dev/null || echo "No commits.")
           else
-            # Fallback: compare against first commit
-            FIRST_COMMIT=$(git rev-list --max-parents=0 HEAD)
-            LOG=$(git log --oneline "$FIRST_COMMIT".."$GITHUB_REF_NAME" --no-merges)
-            HEADER="## Changes (from first commit)"
+            HEADER="## What's new"
+            LOG=$(git log --oneline "$GITHUB_REF_NAME" --no-merges 2>/dev/null || echo "First release.")
           fi
 
-          if [[ -z "$LOG" ]]; then
-            LOG="No commits found."
-          fi
-
-          # ✅ CORRECT: Only ONE output: `changelog<<EOF ... EOF`
+          # ONLY valid GITHUB_OUTPUT format:
           echo "changelog<<EOF" >> "$GITHUB_OUTPUT"
           echo "$HEADER"
           echo
