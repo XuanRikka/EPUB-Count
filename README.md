@@ -9,17 +9,17 @@
 
 ### 方法一：使用Cargo安装（推荐）
 ```bash
-cargo install --git https://github.com/XuanRikka/KrKrTools.git
+cargo install --git https://github.com/XuanRikka/EPUB-Count.git
 ```
 
 
 ### 方法二：下载Release里的二进制
-从release下载对应平台的二进制
+从Release下载对应平台的二进制
 
 
 ### 方法三：从源码编译
 ```bash
-git clone https://github.com/XuanRikka/KrKrTools.git
+git clone https://github.com/XuanRikka/EPUB-Count.git
 cd KrKrTools
 cargo build --release
 ```
