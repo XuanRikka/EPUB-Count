@@ -9,12 +9,26 @@ use scraper::Html;
 use walkdir::{DirEntry, WalkDir};
 use memmap2::Mmap;
 
+/// 一个用于统计 EPUB 文件字数的小工具
+///
+/// 支持直接指定文件，或通过 `-w` 递归遍历目录。
 #[derive(Parser)]
+#[command(
+    version,
+    about,
+    long_about = None,
+)]
 struct Cli
 {
+    /// 要统计的 EPUB 文件路径（支持多个）
+    ///
+    /// 可传入 `.epub` 文件，或配合 `-w` 传入目录。
     #[arg(required = true)]
     files: Vec<String>,
 
+    /// 递归遍历目录（walk directories）
+    ///
+    /// 当传入的是目录时，自动查找其中所有 `.epub` 文件并统计。
     #[arg(short ,long, default_value_t = false, action = clap::ArgAction::SetTrue)]
     walk: bool
 }
