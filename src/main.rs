@@ -1,20 +1,47 @@
+use std::collections::HashMap;
+use std::fs::{File, OpenOptions};
+use std::io::{Cursor, Read, Seek};
+use std::path::{Path, PathBuf};
+use std::process::exit;
 use clap::Parser;
-
-use std::fs::File;
-use std::io::{BufReader, Read};
 use zip::ZipArchive;
-use std::path::PathBuf;
 use scraper::Html;
+use walkdir::{DirEntry, WalkDir};
+use memmap2::Mmap;
 
 #[derive(Parser)]
 struct Cli
 {
     #[arg(required = true)]
     files: Vec<String>,
+
+    #[arg(short ,long, default_value_t = false, action = clap::ArgAction::SetTrue)]
+    walk: bool
 }
 
 
-fn html_word_count(string: &String) -> usize
+pub fn get_all_epub_walkdir<P: AsRef<Path>>(path: P) -> Vec<PathBuf> {
+    fn is_epub(entry: &DirEntry) -> bool {
+        entry.file_type().is_file()
+            && entry
+            .path()
+            .extension()
+            .map_or(false, |ext| ext.eq_ignore_ascii_case("epub"))
+    }
+
+    WalkDir::new(path)
+        .into_iter()
+        .filter_entry(|e| {
+            e.file_type().is_dir() || is_epub(e)
+        })
+        .filter_map(|e| e.ok())
+        .filter(is_epub)
+        .map(|e| e.into_path())
+        .collect()
+}
+
+
+fn html_word_count(string: &String) -> u64
 {
     Html::parse_document(string)
         .root_element()
@@ -24,63 +51,131 @@ fn html_word_count(string: &String) -> usize
         .collect::<Vec<_>>()
         .join("")
         .chars()
-        .count()
+        .count() as u64
 }
 
 
-fn zip_xhtml_read(file: &File) -> Vec<String>
+fn zip_xhtml_read<W: Read + Seek>(file: W) -> Vec<String> {
+    let mut zip = ZipArchive::new(file).expect("读取zip文件时出现错误");
+
+    let n = zip.len();
+    let mut results = Vec::new();
+
+    for i in 0..n {
+        let mut file = zip.by_index(i).expect("遍历zip文件列表时出现错误");
+        let name = file.name();
+
+        if !name.ends_with(".xhtml") {
+            continue;
+        }
+        if !(name.starts_with("OEBPS/Text/") || name.starts_with("EPUB/Text/")) {
+            continue;
+        }
+
+        let size = file.size();
+        let mut content = String::with_capacity(size as usize);
+
+        file.read_to_string(&mut content).expect("读取xhtml文件时出现错误");
+        results.push(content);
+    }
+
+    results
+}
+
+fn get_epub_word_count<W: Read + Seek>(file: W) -> u64
 {
-    let buf = BufReader::new(file);
-    let mut zip = ZipArchive::new(buf).expect("打开EPUB文件打开失败");
-    let text_paths: Vec<String> = zip.file_names()
-        .filter(|x| x.ends_with(".xhtml")&&(x.starts_with("OEBPS/Text/")||x.starts_with("EPUB/Text/")))
-        .map(|s| s.to_string()).collect();
-    return text_paths
-        .into_iter().map(|path| {
-            let mut file = zip.by_name(path.as_str()).unwrap();
-            let mut s = String::new();
-            file.read_to_string(&mut s).unwrap();
-            s
-        })
-        .collect::<Vec<String>>();
+    let chars = zip_xhtml_read(file);
+    let word_count: u64 = chars.iter().map(
+        |s| html_word_count(s)
+    ).sum::<u64>();
+
+    word_count
 }
 
 
-fn main() {
+fn main()
+{
     let args = Cli::parse();
 
-    let mut paths: Vec<PathBuf> = Vec::new();
-    for file in args.files
-    {
+    let mut epub_files: HashMap<String, File> = HashMap::new();
+    let mut epub_mmaps: HashMap<String, Cursor<Mmap>> = HashMap::new();
+
+    for file in &args.files {
         let path = PathBuf::from(file.as_str());
-        if path.exists()
-        {
-            paths.push(path);
+
+        if !path.exists() {
+            eprintln!("文件/目录 {} 不存在", file);
+            continue;
         }
-        else
-        {
-            eprintln!("文件 {} 不存在", file);
+
+        if args.walk && path.is_dir() {
+            for p in get_all_epub_walkdir(path.clone()) {
+                let file = OpenOptions::new().
+                    read(true).
+                    write(false).
+                    create(false).
+                    open(p.clone()).
+                    expect("打开文件时出现错误");
+                let file_mmap = unsafe { Mmap::map(&file) };
+                match file_mmap {
+                    Ok(mmap) => {
+                        epub_mmaps.insert(
+                            p.file_name().unwrap().to_string_lossy().to_string(),
+                            Cursor::new(mmap)
+                        );
+                    },
+                    Err(e) => {
+                        eprintln!("警告：无法 mmap {}: {}", p.display(), e);
+                        epub_files.insert(
+                            path.file_name().unwrap().to_string_lossy().to_string(),
+                            file
+                        );
+                    }
+                }
+            }
+        } else {
+            let file = OpenOptions::new().
+                read(true).
+                write(false).
+                create(false).
+                open(path.clone()).
+                expect("打开文件时出现错误");
+            let file_mmap = unsafe { Mmap::map(&file) };
+            match file_mmap {
+                Ok(mmap) => {
+                    epub_mmaps.insert(
+                        path.file_name().unwrap().to_string_lossy().to_string(),
+                        Cursor::new(mmap)
+                    );
+                },
+                Err(e) => {
+                    eprintln!("警告：无法 mmap {}: {}", path.display(), e);
+                    epub_files.insert(
+                        path.file_name().unwrap().to_string_lossy().to_string(),
+                        file
+                    );
+                }
+            }
         }
     }
 
-    let files = paths.iter()
-        .map(|path| {
-            File::open(path).expect("打开文件失败")
-        })
-        .collect::<Vec<File>>();
+    if epub_files.is_empty() && epub_mmaps.is_empty()
+    {
+        eprintln!("没有找到任何EPUB文件");
+        exit(0)
+    }
 
-    let xhtml_texts = files.iter()
-        .map(|file| {
-            zip_xhtml_read(file)
-        })
-        .flatten()
-        .collect::<Vec<String>>();
+    let mut total_word_count: u64 = 0;
+    for (file_name, file) in epub_files.iter() {
+        let word_count = get_epub_word_count(file);
+        println!("{}：{} 字", file_name, word_count);
+        total_word_count += word_count;
+    }
+    for (file_name, file) in epub_mmaps.iter_mut() {
+        let word_count = get_epub_word_count(file);
+        println!("{}：{} 字", file_name, word_count);
+        total_word_count += word_count;
+    }
 
-    let word_count = xhtml_texts.iter()
-        .map(|text| {
-            html_word_count(text)
-        })
-        .sum::<usize>();
-
-    println!("总字数：{}", word_count);
+    println!("总字数：{} 字", total_word_count)
 }
