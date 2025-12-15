@@ -122,7 +122,8 @@ fn main()
             continue;
         }
 
-        if args.walk && path.is_dir() {
+        if args.walk && path.is_dir()
+        {
             for p in get_all_epub_walkdir(path.clone()) {
                 let file = OpenOptions::new().
                     read(true).
@@ -147,7 +148,13 @@ fn main()
                     }
                 }
             }
-        } else {
+        }
+        else if !args.walk && path.is_dir()
+        {
+            continue;
+        }
+        else
+        {
             let file = OpenOptions::new().
                 read(true).
                 write(false).
