@@ -34,6 +34,17 @@ struct Cli
 }
 
 
+trait ReadSeek: Read + Seek {}
+impl<T: Read + Seek> ReadSeek for T {}
+
+
+struct FileData
+{
+    filename: String,
+    file: Box<dyn ReadSeek>
+}
+
+
 pub fn get_all_epub_walkdir<P: AsRef<Path>>(path: P) -> Vec<PathBuf> {
     fn is_epub(entry: &DirEntry) -> bool {
         entry.file_type().is_file()
@@ -111,8 +122,7 @@ fn main()
 {
     let args = Cli::parse();
 
-    let mut epub_files: HashMap<String, File> = HashMap::new();
-    let mut epub_mmaps: HashMap<String, Cursor<Mmap>> = HashMap::new();
+    let mut epub_renders: Vec<FileData> = Vec::new();
 
     for file in &args.files {
         let path = PathBuf::from(file.as_str());
@@ -134,17 +144,19 @@ fn main()
                 let file_mmap = unsafe { Mmap::map(&file) };
                 match file_mmap {
                     Ok(mmap) => {
-                        epub_mmaps.insert(
-                            p.file_name().unwrap().to_string_lossy().to_string(),
-                            Cursor::new(mmap)
-                        );
+                        let f = FileData{
+                            filename : p.file_name().unwrap().to_string_lossy().to_string(),
+                            file: Box::new(Cursor::new(mmap))
+                        };
+                        epub_renders.push(f)
                     },
                     Err(e) => {
                         eprintln!("警告：无法 mmap {}: {}", p.display(), e);
-                        epub_files.insert(
-                            path.file_name().unwrap().to_string_lossy().to_string(),
-                            file
-                        );
+                        let f = FileData {
+                            filename: p.file_name().unwrap().to_string_lossy().to_string(),
+                            file: Box::new(file)
+                        };
+                        epub_renders.push(f);
                     }
                 }
             }
@@ -164,39 +176,35 @@ fn main()
             let file_mmap = unsafe { Mmap::map(&file) };
             match file_mmap {
                 Ok(mmap) => {
-                    epub_mmaps.insert(
-                        path.file_name().unwrap().to_string_lossy().to_string(),
-                        Cursor::new(mmap)
-                    );
+                    let f = FileData{
+                        filename : path.file_name().unwrap().to_string_lossy().to_string(),
+                        file: Box::new(Cursor::new(mmap))
+                    };
+                    epub_renders.push(f)
                 },
                 Err(e) => {
                     eprintln!("警告：无法 mmap {}: {}", path.display(), e);
-                    epub_files.insert(
-                        path.file_name().unwrap().to_string_lossy().to_string(),
-                        file
-                    );
+                    let f = FileData {
+                        filename: path.file_name().unwrap().to_string_lossy().to_string(),
+                        file: Box::new(file)
+                    };
+                    epub_renders.push(f);
                 }
             }
         }
     }
 
-    if epub_files.is_empty() && epub_mmaps.is_empty()
+    if epub_renders.is_empty()
     {
         eprintln!("没有找到任何EPUB文件");
         exit(0)
     }
 
     let mut total_word_count: u64 = 0;
-    for (file_name, file) in epub_files.iter() {
-        let word_count = get_epub_word_count(file);
-        println!("{}：{} 字", file_name, word_count);
+    for f in epub_renders {
+        let word_count = get_epub_word_count(f.file);
+        println!("{}：{} 字", f.filename, word_count);
         total_word_count += word_count;
     }
-    for (file_name, file) in epub_mmaps.iter_mut() {
-        let word_count = get_epub_word_count(file);
-        println!("{}：{} 字", file_name, word_count);
-        total_word_count += word_count;
-    }
-
     println!("总字数：{} 字", total_word_count)
 }

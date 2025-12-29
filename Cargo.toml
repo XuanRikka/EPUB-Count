@@ -12,7 +12,6 @@ codegen-units = 1
 debug = false
 strip = true
 
-
 [dependencies]
 clap = { version = "4.5.53", features = ["derive"] }
 memmap2 = "0.9.9"
