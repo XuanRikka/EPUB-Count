@@ -93,7 +93,7 @@ fn zip_xhtml_read<W: Read + Seek>(file: W) -> Vec<String> {
         if !name.ends_with(".xhtml") {
             continue;
         }
-        if !(name.starts_with("OEBPS/Text/") || name.starts_with("EPUB/Text/")) {
+        if name == "toc.xhtml" {
             continue;
         }
 
