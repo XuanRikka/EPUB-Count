@@ -90,10 +90,10 @@ fn zip_xhtml_read<W: Read + Seek>(file: W) -> Vec<String> {
         let mut file = zip.by_index(i).expect("遍历zip文件列表时出现错误");
         let name = file.name();
 
-        if !name.ends_with(".xhtml") {
+        if !(name.ends_with(".xhtml") || name.ends_with(".html")) {
             continue;
         }
-        if name == "toc.xhtml" {
+        if name == "toc.xhtml" || name == "toc.html" {
             continue;
         }
 
