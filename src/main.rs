@@ -57,6 +57,12 @@ struct FileData
     file: Box<dyn ReadSeek>
 }
 
+struct FileWordCount
+{
+    filename: String,
+    word_count: u64
+}
+
 
 pub fn get_all_epub_walkdir<P: AsRef<Path>>(path: P) -> Vec<PathBuf> {
     fn is_epub(entry: &DirEntry) -> bool {
@@ -235,23 +241,30 @@ fn main()
 
 
     let mut total_word_count: u64 = 0;
-    let mut threads: Vec<JoinHandle<u64>> = Vec::new();
+    let mut threads: Vec<JoinHandle<Vec<FileWordCount>>> = Vec::new();
     for files in split_vec(epub_renders, args.cpu_nums)
     {
         threads.push(thread::spawn(move || {
-            let mut total: u64 = 0;
+            let mut infos: Vec<FileWordCount> = Vec::new();
             for f in files
             {
                 let word_count = get_epub_word_count(f.file);
-                println!("{}：{} 字", f.filename, word_count);
-                total+=word_count;
+                let info = FileWordCount{
+                    filename: f.filename,
+                    word_count
+                };
+                infos.push(info);
             }
-            total
+            infos
         }))
     }
 
     for handle in threads {
-        total_word_count += handle.join().unwrap();
+        let infos = handle.join().unwrap();
+        for info in infos {
+            println!("{} 字数：{} 字", info.filename, info.word_count);
+            total_word_count += info.word_count;
+        }
     }
 
     println!("总字数：{} 字", total_word_count)
