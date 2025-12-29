@@ -1,8 +1,10 @@
-use std::collections::HashMap;
-use std::fs::{File, OpenOptions};
+use std::fs::{OpenOptions};
 use std::io::{Cursor, Read, Seek};
 use std::path::{Path, PathBuf};
 use std::process::exit;
+use std::thread;
+use std::thread::{available_parallelism, JoinHandle};
+
 use clap::Parser;
 use zip::ZipArchive;
 use scraper::Html;
@@ -30,12 +32,23 @@ struct Cli
     ///
     /// 当传入的是目录时，自动查找其中所有 `.epub` 文件并统计。
     #[arg(short ,long, default_value_t = false, action = clap::ArgAction::SetTrue)]
-    walk: bool
+    walk: bool,
+
+    /// 调整使用的线程数，默认为cpu线程数
+    #[arg(short, long, default_value_t = get_cpu_count())]
+    cpu_nums: usize
 }
 
 
-trait ReadSeek: Read + Seek {}
-impl<T: Read + Seek> ReadSeek for T {}
+fn get_cpu_count() -> usize {
+    available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(1)
+}
+
+
+trait ReadSeek: Read + Seek + Send {}
+impl<T: Read + Seek + Send> ReadSeek for T {}
 
 
 struct FileData
@@ -118,11 +131,30 @@ fn get_epub_word_count<W: Read + Seek>(file: W) -> u64
 }
 
 
+fn split_vec<T>(mut vec: Vec<Box<T>>, n: usize) -> Vec<Vec<Box<T>>> {
+    if n == 0 || vec.is_empty() {
+        return vec![vec];
+    }
+
+    let len = vec.len();
+    let chunk_size = (len + n - 1) / n;
+    let mut result = Vec::new();
+
+    while !vec.is_empty() {
+        let take = chunk_size.min(vec.len());
+        let chunk = vec.drain(..take).collect();
+        result.push(chunk);
+    }
+
+    result
+}
+
+
 fn main()
 {
     let args = Cli::parse();
 
-    let mut epub_renders: Vec<FileData> = Vec::new();
+    let mut epub_renders: Vec<Box<FileData>> = Vec::new();
 
     for file in &args.files {
         let path = PathBuf::from(file.as_str());
@@ -148,7 +180,7 @@ fn main()
                             filename : p.file_name().unwrap().to_string_lossy().to_string(),
                             file: Box::new(Cursor::new(mmap))
                         };
-                        epub_renders.push(f)
+                        epub_renders.push(Box::new(f))
                     },
                     Err(e) => {
                         eprintln!("警告：无法 mmap {}: {}", p.display(), e);
@@ -156,7 +188,7 @@ fn main()
                             filename: p.file_name().unwrap().to_string_lossy().to_string(),
                             file: Box::new(file)
                         };
-                        epub_renders.push(f);
+                        epub_renders.push(Box::new(f));
                     }
                 }
             }
@@ -180,7 +212,7 @@ fn main()
                         filename : path.file_name().unwrap().to_string_lossy().to_string(),
                         file: Box::new(Cursor::new(mmap))
                     };
-                    epub_renders.push(f)
+                    epub_renders.push(Box::new(f))
                 },
                 Err(e) => {
                     eprintln!("警告：无法 mmap {}: {}", path.display(), e);
@@ -188,7 +220,7 @@ fn main()
                         filename: path.file_name().unwrap().to_string_lossy().to_string(),
                         file: Box::new(file)
                     };
-                    epub_renders.push(f);
+                    epub_renders.push(Box::new(f));
                 }
             }
         }
@@ -200,11 +232,27 @@ fn main()
         exit(0)
     }
 
+
+
     let mut total_word_count: u64 = 0;
-    for f in epub_renders {
-        let word_count = get_epub_word_count(f.file);
-        println!("{}：{} 字", f.filename, word_count);
-        total_word_count += word_count;
+    let mut threads: Vec<JoinHandle<u64>> = Vec::new();
+    for files in split_vec(epub_renders, args.cpu_nums)
+    {
+        threads.push(thread::spawn(move || {
+            let mut total: u64 = 0;
+            for f in files
+            {
+                let word_count = get_epub_word_count(f.file);
+                println!("{}：{} 字", f.filename, word_count);
+                total+=word_count;
+            }
+            total
+        }))
     }
+
+    for handle in threads {
+        total_word_count += handle.join().unwrap();
+    }
+
     println!("总字数：{} 字", total_word_count)
 }
