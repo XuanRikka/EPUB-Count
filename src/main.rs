@@ -34,6 +34,12 @@ struct Cli
     #[arg(short ,long, default_value_t = false, action = clap::ArgAction::SetTrue)]
     walk: bool,
 
+
+    /// 是否启用流式输出
+    #[arg(short, long, default_value_t = false, action = clap::ArgAction::SetTrue)]
+    stream_output: bool,
+
+
     /// 调整使用的线程数，默认为cpu线程数
     #[arg(short, long, default_value_t = get_cpu_count())]
     cpu_nums: usize
@@ -168,7 +174,7 @@ fn open_file<P: AsRef<Path>>(p: P) -> Box<dyn ReadSeek>
     let file_mmap = unsafe { Mmap::map(&file) };
     match file_mmap {
         Ok(mmap) => Box::new(Cursor::new(mmap)),
-        Err(e) => {
+        Err(_) => {
             Box::new(file)
         }
     }
@@ -238,17 +244,32 @@ fn main()
                     filename: f.filename,
                     word_count
                 };
+                if args.stream_output
+                {
+                    println!("{} 字数：{} 字", info.filename, info.word_count);
+                }
                 infos.push(info);
             }
             infos
         }))
     }
 
-    for handle in threads {
-        let infos = handle.join().unwrap();
-        for info in infos {
-            println!("{} 字数：{} 字", info.filename, info.word_count);
-            total_word_count += info.word_count;
+    if !args.stream_output
+    {
+        for handle in threads {
+            let infos = handle.join().unwrap();
+            for info in infos {
+                println!("{} 字数：{} 字", info.filename, info.word_count);
+                total_word_count += info.word_count;
+            }
+        }
+    }
+    else
+    {
+        for handle in threads
+        {
+            let infos = handle.join().unwrap();
+            total_word_count += infos.iter().map(|info| info.word_count).sum::<u64>();
         }
     }
 
