@@ -47,14 +47,14 @@ fn get_cpu_count() -> usize {
 }
 
 
-trait ReadSeek: Read + Seek + Send {}
-impl<T: Read + Seek + Send> ReadSeek for T {}
+trait ReadSeek: Read + Seek {}
+impl<T: Read + Seek> ReadSeek for T {}
 
 
 struct FileData
 {
     filename: String,
-    file: Box<dyn ReadSeek>
+    file: PathBuf
 }
 
 struct FileWordCount
@@ -126,8 +126,9 @@ fn zip_xhtml_read<W: Read + Seek>(file: W) -> Vec<String> {
     results
 }
 
-fn get_epub_word_count<W: Read + Seek>(file: W) -> u64
+fn get_epub_word_count<P: AsRef<Path>>(path: P) -> u64
 {
+    let file = open_file(path);
     let chars = zip_xhtml_read(file);
     let word_count: u64 = chars.iter().map(
         |s| html_word_count(s)
@@ -137,7 +138,7 @@ fn get_epub_word_count<W: Read + Seek>(file: W) -> u64
 }
 
 
-fn split_vec<T>(mut vec: Vec<Box<T>>, n: usize) -> Vec<Vec<Box<T>>> {
+fn split_vec<T>(mut vec: Vec<T>, n: usize) -> Vec<Vec<T>> {
     if n == 0 || vec.is_empty() {
         return vec![vec];
     }
@@ -148,7 +149,7 @@ fn split_vec<T>(mut vec: Vec<Box<T>>, n: usize) -> Vec<Vec<Box<T>>> {
 
     while !vec.is_empty() {
         let take = chunk_size.min(vec.len());
-        let chunk = vec.drain(..take).collect();
+        let chunk = vec.drain(..take).collect::<Vec<T>>();
         result.push(chunk);
     }
 
@@ -156,11 +157,29 @@ fn split_vec<T>(mut vec: Vec<Box<T>>, n: usize) -> Vec<Vec<Box<T>>> {
 }
 
 
+fn open_file<P: AsRef<Path>>(p: P) -> Box<dyn ReadSeek>
+{
+    let file = OpenOptions::new()
+        .read(true)
+        .write(false)
+        .create(false)
+        .open(p)
+        .expect("打开文件失败");
+    let file_mmap = unsafe { Mmap::map(&file) };
+    match file_mmap {
+        Ok(mmap) => Box::new(Cursor::new(mmap)),
+        Err(e) => {
+            Box::new(file)
+        }
+    }
+}
+
+
 fn main()
 {
     let args = Cli::parse();
 
-    let mut epub_renders: Vec<Box<FileData>> = Vec::new();
+    let mut epub_renders: Vec<FileData> = Vec::new();
 
     for file in &args.files {
         let path = PathBuf::from(file.as_str());
@@ -173,62 +192,28 @@ fn main()
         if args.walk && path.is_dir()
         {
             for p in get_all_epub_walkdir(path.clone()) {
-                let file = OpenOptions::new().
-                    read(true).
-                    write(false).
-                    create(false).
-                    open(p.clone()).
-                    expect("打开文件时出现错误");
-                let file_mmap = unsafe { Mmap::map(&file) };
-                match file_mmap {
-                    Ok(mmap) => {
-                        let f = FileData{
-                            filename : p.file_name().unwrap().to_string_lossy().to_string(),
-                            file: Box::new(Cursor::new(mmap))
-                        };
-                        epub_renders.push(Box::new(f))
-                    },
-                    Err(e) => {
-                        eprintln!("警告：无法 mmap {}: {}", p.display(), e);
-                        let f = FileData {
-                            filename: p.file_name().unwrap().to_string_lossy().to_string(),
-                            file: Box::new(file)
-                        };
-                        epub_renders.push(Box::new(f));
-                    }
-                }
+                let s = FileData {
+                    filename: p.file_name().unwrap().to_str().unwrap().to_string(),
+                    file: p
+                };
+                epub_renders.push(s);
             }
         }
         else if !args.walk && path.is_dir()
         {
             continue;
         }
+        else if path.is_file()
+        {
+            let s = FileData {
+                filename: path.file_name().unwrap().to_str().unwrap().to_string(),
+                file: path
+            };
+            epub_renders.push(s);
+        }
         else
         {
-            let file = OpenOptions::new().
-                read(true).
-                write(false).
-                create(false).
-                open(path.clone()).
-                expect("打开文件时出现错误");
-            let file_mmap = unsafe { Mmap::map(&file) };
-            match file_mmap {
-                Ok(mmap) => {
-                    let f = FileData{
-                        filename : path.file_name().unwrap().to_string_lossy().to_string(),
-                        file: Box::new(Cursor::new(mmap))
-                    };
-                    epub_renders.push(Box::new(f))
-                },
-                Err(e) => {
-                    eprintln!("警告：无法 mmap {}: {}", path.display(), e);
-                    let f = FileData {
-                        filename: path.file_name().unwrap().to_string_lossy().to_string(),
-                        file: Box::new(file)
-                    };
-                    epub_renders.push(Box::new(f));
-                }
-            }
+            panic!("未知输入")
         }
     }
 
