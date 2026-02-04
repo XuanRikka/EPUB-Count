@@ -1,3 +1,5 @@
+# 本仓库已不再维护，请移步[XuanRikka/epub-tools](https://github.com/XuanRikka/epub-tools)
+
 # EPUB-Count
 基于Rust实现的epub计数计算器
 
